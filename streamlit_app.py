@@ -1,151 +1,357 @@
+#######################
+# Import libraries
 import streamlit as st
 import pandas as pd
-import math
-from pathlib import Path
+import altair as alt
+import plotly.express as px
 
-# Set the title and favicon that appear in the Browser's tab bar.
+#######################
+# Page configuration
 st.set_page_config(
-    page_title='GDP dashboard',
-    page_icon=':earth_americas:', # This is an emoji shortcode. Could be a URL too.
-)
+    page_title="Titanic Passenger Dashboard",
+    page_icon="🏂",
+    layout="wide",
+    initial_sidebar_state="expanded")
 
-# -----------------------------------------------------------------------------
-# Declare some useful functions.
+alt.themes.enable("default")
 
-@st.cache_data
-def get_gdp_data():
-    """Grab GDP data from a CSV file.
+#######################
+# CSS styling
+st.markdown("""
+<style>
 
-    This uses caching to avoid having to read the file every time. If we were
-    reading from an HTTP endpoint instead of a file, it's a good idea to set
-    a maximum age to the cache with the TTL argument: @st.cache_data(ttl='1d')
-    """
+[data-testid="block-container"] {
+    padding-left: 2rem;
+    padding-right: 2rem;
+    padding-top: 1rem;
+    padding-bottom: 0rem;
+    margin-bottom: -7rem;
+}
 
-    # Instead of a CSV on disk, you could read from an HTTP endpoint here too.
-    DATA_FILENAME = Path(__file__).parent/'data/gdp_data.csv'
-    raw_gdp_df = pd.read_csv(DATA_FILENAME)
+[data-testid="stVerticalBlock"] {
+    padding-left: 0rem;
+    padding-right: 0rem;
+}
 
-    MIN_YEAR = 1960
-    MAX_YEAR = 2022
+/* ✅ Metric 카드 배경을 흰색으로 변경 */
+[data-testid="stMetric"] {
+    background-color: #ffffff;
+    text-align: center;
+    padding: 15px 0;
+    border: 1px solid #E6E6E6;
+    border-radius: 8px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+}
 
-    # The data above has columns like:
-    # - Country Name
-    # - Country Code
-    # - [Stuff I don't care about]
-    # - GDP for 1960
-    # - GDP for 1961
-    # - GDP for 1962
-    # - ...
-    # - GDP for 2022
-    #
-    # ...but I want this instead:
-    # - Country Name
-    # - Country Code
-    # - Year
-    # - GDP
-    #
-    # So let's pivot all those year-columns into two: Year and GDP
-    gdp_df = raw_gdp_df.melt(
-        ['Country Code'],
-        [str(x) for x in range(MIN_YEAR, MAX_YEAR + 1)],
-        'Year',
-        'GDP',
+[data-testid="stMetricLabel"] {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+}
+
+[data-testid="stMetricDeltaIcon-Up"] {
+    position: relative;
+    left: 38%;
+    -webkit-transform: translateX(-50%);
+    -ms-transform: translateX(-50%);
+    transform: translateX(-50%);
+}
+
+[data-testid="stMetricDeltaIcon-Down"] {
+    position: relative;
+    left: 38%;
+    -webkit-transform: translateX(-50%);
+    -ms-transform: translateX(-50%);
+    transform: translateX(-50%);
+}
+
+</style>
+""", unsafe_allow_html=True)
+
+
+#######################
+# Load data
+df_reshaped = pd.read_csv('titanic.csv') ## 분석 데이터 넣기
+
+
+#######################
+# Sidebar
+with st.sidebar:
+    st.title("Titanic Passenger Dashboard")
+    st.caption("필터를 선택하면 모든 차트가 동기화됩니다.")
+
+    st.markdown("---")
+
+    # --- 기본 값/옵션 준비
+    df = df_reshaped.copy()
+
+    # 숫자 범위(결측 제외)
+    age_min = int(df["Age"].dropna().min()) if df["Age"].notna().any() else 0
+    age_max = int(df["Age"].dropna().max()) if df["Age"].notna().any() else 80
+    fare_min = float(df["Fare"].dropna().min()) if df["Fare"].notna().any() else 0.0
+    fare_max = float(df["Fare"].dropna().max()) if df["Fare"].notna().any() else 600.0
+
+    # 필터 위젯
+    sex_sel = st.multiselect(
+        "성별 (Sex)",
+        options=sorted(df["Sex"].dropna().unique().tolist()),
+        default=sorted(df["Sex"].dropna().unique().tolist()),
     )
 
-    # Convert years from string to integers
-    gdp_df['Year'] = pd.to_numeric(gdp_df['Year'])
+    pclass_sel = st.multiselect(
+        "탑승 클래스 (Pclass)",
+        options=sorted(df["Pclass"].dropna().unique().tolist()),
+        default=sorted(df["Pclass"].dropna().unique().tolist()),
+        help="1=1등석, 2=2등석, 3=3등석",
+    )
 
-    return gdp_df
+    embarked_sel = st.multiselect(
+        "출항지 (Embarked)",
+        options=sorted(df["Embarked"].dropna().unique().tolist()),
+        default=sorted(df["Embarked"].dropna().unique().tolist()),
+        help="C=Cherbourg, Q=Queenstown, S=Southampton",
+    )
 
-gdp_df = get_gdp_data()
+    age_range = st.slider(
+        "연령대 (Age)",
+        min_value=age_min,
+        max_value=age_max,
+        value=(age_min, age_max),
+        step=1,
+    )
+    include_age_nan = st.checkbox("나이 결측치 포함", value=True)
 
-# -----------------------------------------------------------------------------
-# Draw the actual page
+    fare_range = st.slider(
+        "운임 범위 (Fare)",
+        min_value=float(fare_min),
+        max_value=float(fare_max),
+        value=(float(fare_min), float(min(fare_max, 150.0))),
+        step=0.5,
+    )
+    include_fare_nan = st.checkbox("운임 결측치 포함", value=True)
 
-# Set the title that appears at the top of the page.
-'''
-# :earth_americas: GDP dashboard
+    st.markdown("---")
+    reset = st.button("필터 초기화")
 
-Browse GDP data from the [World Bank Open Data](https://data.worldbank.org/) website. As you'll
-notice, the data only goes to 2022 right now, and datapoints for certain years are often missing.
-But it's otherwise a great (and did I mention _free_?) source of data.
-'''
+    # --- 필터 적용
+    if reset:
+        st.session_state.clear()
+        st.rerun()
 
-# Add some spacing
-''
-''
+    filt = pd.Series([True] * len(df))
 
-min_value = gdp_df['Year'].min()
-max_value = gdp_df['Year'].max()
+    if sex_sel:
+        filt &= df["Sex"].isin(sex_sel)
 
-from_year, to_year = st.slider(
-    'Which years are you interested in?',
-    min_value=min_value,
-    max_value=max_value,
-    value=[min_value, max_value])
+    if pclass_sel:
+        filt &= df["Pclass"].isin(pclass_sel)
 
-countries = gdp_df['Country Code'].unique()
+    if embarked_sel:
+        filt &= df["Embarked"].isin(embarked_sel)
 
-if not len(countries):
-    st.warning("Select at least one country")
+    # Age 필터 (결측 포함 여부)
+    age_ok = df["Age"].between(age_range[0], age_range[1])
+    if include_age_nan:
+        age_ok = age_ok | df["Age"].isna()
+    filt &= age_ok
 
-selected_countries = st.multiselect(
-    'Which countries would you like to view?',
-    countries,
-    ['DEU', 'FRA', 'GBR', 'BRA', 'MEX', 'JPN'])
+    # Fare 필터 (결측 포함 여부)
+    fare_ok = df["Fare"].between(fare_range[0], fare_range[1])
+    if include_fare_nan:
+        fare_ok = fare_ok | df["Fare"].isna()
+    filt &= fare_ok
 
-''
-''
-''
+    filtered_df = df.loc[filt].copy()
 
-# Filter the data
-filtered_gdp_df = gdp_df[
-    (gdp_df['Country Code'].isin(selected_countries))
-    & (gdp_df['Year'] <= to_year)
-    & (from_year <= gdp_df['Year'])
-]
-
-st.header('GDP over time', divider='gray')
-
-''
-
-st.line_chart(
-    filtered_gdp_df,
-    x='Year',
-    y='GDP',
-    color='Country Code',
-)
-
-''
-''
+    # 다운스트림에서 사용하도록 저장
+    st.session_state["filtered_df"] = filtered_df
+    st.caption(f"현재 필터링된 승객 수: **{len(filtered_df):,} 명**")
 
 
-first_year = gdp_df[gdp_df['Year'] == from_year]
-last_year = gdp_df[gdp_df['Year'] == to_year]
 
-st.header(f'GDP in {to_year}', divider='gray')
+#######################
+# Plots
 
-''
 
-cols = st.columns(4)
 
-for i, country in enumerate(selected_countries):
-    col = cols[i % len(cols)]
+#######################
+# Dashboard Main Panel
+col = st.columns((1.5, 4.5, 2), gap='medium')
 
-    with col:
-        first_gdp = first_year[first_year['Country Code'] == country]['GDP'].iat[0] / 1000000000
-        last_gdp = last_year[last_year['Country Code'] == country]['GDP'].iat[0] / 1000000000
+with col[0]:
+    st.subheader("생존 요약 (Summary)")
 
-        if math.isnan(first_gdp):
-            growth = 'n/a'
-            delta_color = 'off'
-        else:
-            growth = f'{last_gdp / first_gdp:,.2f}x'
-            delta_color = 'normal'
+    df = st.session_state["filtered_df"]
 
-        st.metric(
-            label=f'{country} GDP',
-            value=f'{last_gdp:,.0f}B',
-            delta=growth,
-            delta_color=delta_color
+    # --- 전체 생존자/사망자 수
+    total_passengers = len(df)
+    total_survived = df["Survived"].sum()
+    total_dead = total_passengers - total_survived
+    survival_rate = (total_survived / total_passengers * 100) if total_passengers > 0 else 0
+
+    st.metric(
+        label="총 승객 수",
+        value=f"{total_passengers:,}"
+    )
+    st.metric(
+        label="생존자 수",
+        value=f"{total_survived:,}",
+        delta=f"{survival_rate:.1f}% 생존률",
+        delta_color="normal"
+    )
+    st.metric(
+        label="사망자 수",
+        value=f"{total_dead:,}"
+    )
+
+    st.markdown("---")
+
+    # --- 탑승 클래스별 생존률
+    st.caption("탑승 클래스별 생존률 (%)")
+    pclass_survival = (
+        df.groupby("Pclass")["Survived"]
+        .mean()
+        .reset_index()
+        .sort_values("Pclass")
+    )
+    pclass_survival["Survived"] *= 100
+
+    chart = alt.Chart(pclass_survival).mark_bar().encode(
+        x=alt.X("Pclass:O", title="탑승 클래스"),
+        y=alt.Y("Survived:Q", title="생존률 (%)"),
+        tooltip=["Pclass", alt.Tooltip("Survived", format=".1f")]
+    ).properties(
+        height=250
+    )
+    st.altair_chart(chart, use_container_width=True)
+
+
+
+with col[1]:
+    st.subheader("메인 시각화")
+
+    df = st.session_state["filtered_df"]
+
+    if len(df) == 0:
+        st.warning("필터 결과가 없습니다. 사이드바에서 조건을 완화해 주세요.")
+    else:
+        # -----------------------------
+        # 1) 연령 × 클래스별 생존률 히트맵
+        # -----------------------------
+        st.markdown("#### 연령 × 탑승 클래스별 생존률 (Heatmap)")
+        heatmap = (
+            alt.Chart(df)
+            .mark_rect()
+            .encode(
+                x=alt.X("Pclass:O", title="탑승 클래스"),
+                y=alt.Y("Age:Q", bin=alt.Bin(step=5), title="연령대 (5세 구간)"),
+                color=alt.Color("mean(Survived):Q", title="생존률", scale=alt.Scale(scheme="blues")),
+                tooltip=[
+                    alt.Tooltip("Pclass:O", title="클래스"),
+                    alt.Tooltip("Age:Q", bin=alt.Bin(step=5), title="연령대"),
+                    alt.Tooltip("mean(Survived):Q", title="평균 생존률", format=".1%"),
+                    alt.Tooltip("count():Q", title="표본 수"),
+                ],
+            )
+            .properties(height=360)
         )
+        st.altair_chart(heatmap, use_container_width=True)
+
+        st.markdown("---")
+
+        # -----------------------------
+        # 2) 운임(Fare) 분포: 생존/사망 비교 (Box Plot)
+        # -----------------------------
+        st.markdown("#### 운임 분포와 생존 여부 (Box Plot)")
+        boxfig = px.box(
+            df,
+            x="Survived",
+            y="Fare",
+            points="outliers",
+            labels={"Survived": "생존 여부 (0=사망, 1=생존)", "Fare": "운임"},
+        )
+        boxfig.update_layout(height=350, margin=dict(l=10, r=10, t=10, b=10))
+        st.plotly_chart(boxfig, use_container_width=True)
+
+        st.markdown("---")
+
+        # -----------------------------
+        # 3) 연령대별 생존률 곡선 (라인)
+        # -----------------------------
+        st.markdown("#### 연령대별 생존률 (Line)")
+        tmp = df.dropna(subset=["Age"]).copy()
+        bins = list(range(int(tmp["Age"].min()) // 5 * 5, int(tmp["Age"].max()) + 6, 5))
+        tmp["age_bin"] = pd.cut(tmp["Age"], bins=bins, include_lowest=True)
+        rate_by_age = (
+            tmp.groupby("age_bin")["Survived"].mean().reset_index()
+        )
+        rate_by_age["age_mid"] = rate_by_age["age_bin"].apply(lambda iv: iv.mid if hasattr(iv, "mid") else None)
+        line = (
+            alt.Chart(rate_by_age)
+            .mark_line(point=True)
+            .encode(
+                x=alt.X("age_mid:Q", title="연령(구간 중심)"),
+                y=alt.Y("Survived:Q", title="생존률"),
+                tooltip=[
+                    alt.Tooltip("age_bin:N", title="연령 구간"),
+                    alt.Tooltip("Survived:Q", title="생존률", format=".1%"),
+                ],
+            )
+            .properties(height=300)
+        )
+        st.altair_chart(line, use_container_width=True)
+
+
+
+with col[2]:
+    st.subheader("세부 분석")
+
+    df = st.session_state["filtered_df"]
+
+    if len(df) == 0:
+        st.info("필터 결과가 없습니다. 사이드바 조건을 확인하세요.")
+    else:
+        # -----------------------------
+        # 1) Top Groups by Survival
+        # -----------------------------
+        st.markdown("#### 생존률이 높은 그룹 (Top Groups)")
+
+        # 그룹 정의: 성별 + 클래스
+        group_stats = (
+            df.groupby(["Sex", "Pclass"])["Survived"]
+            .mean()
+            .reset_index()
+            .sort_values("Survived", ascending=False)
+        )
+        group_stats["Survived"] *= 100  # 퍼센트 변환
+
+        top_chart = (
+            alt.Chart(group_stats.head(6))
+            .mark_bar()
+            .encode(
+                x=alt.X("Survived:Q", title="생존률 (%)"),
+                y=alt.Y("Sex:N", title="성별", sort="-x"),
+                color=alt.Color("Pclass:O", title="탑승 클래스"),
+                tooltip=["Sex", "Pclass", alt.Tooltip("Survived", format=".1f")],
+            )
+            .properties(height=300)
+        )
+        st.altair_chart(top_chart, use_container_width=True)
+
+        st.markdown("---")
+
+        # -----------------------------
+        # 2) 상위운임 승객 리스트
+        # -----------------------------
+        st.markdown("#### 상위운임 승객 (Top Fare Passengers)")
+        top_n = 10  # 표시 개수
+        cols_to_show = ["Name", "Pclass", "Sex", "Age", "Fare", "Embarked", "Survived"]
+        show_df = (
+            df[cols_to_show]
+            .dropna(subset=["Fare"])
+            .sort_values("Fare", ascending=False)
+            .head(top_n)
+            .reset_index(drop=True)
+        )
+        show_df["Survived"] = show_df["Survived"].map({0: "사망", 1: "생존"})
+        st.dataframe(show_df, use_container_width=True)
